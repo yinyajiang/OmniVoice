@@ -16,25 +16,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     libsndfile1 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
-# Copy project files.
-COPY . /app
+# Copy stable files first to maximize build cache reuse.
+COPY pyproject.toml uv.lock README.md /app/
+COPY omnivoice /app/omnivoice
 
 # Clean any cached bytecode from host context.
 RUN find /app -type d -name "__pycache__" -prune -exec rm -rf {} + && \
     find /app -type f -name "*.pyc" -delete
 
-# Ensure deploy script is executable and install dependencies.
-RUN chmod +x /app/serve/deploy.sh && uv sync
-
-# Pre-download model during image build (default: k2-fsa/OmniVoice).
+# Install dependencies and pre-download models.
+RUN uv sync
 ARG CFG_MODEL=k2-fsa/OmniVoice
-RUN uv run python -c "from omnivoice import OmniVoice; OmniVoice.from_pretrained('${CFG_MODEL}', load_asr=True)"
+ARG CFG_LOAD_ASR_MODEL=openai/whisper-large-v3-turbo
+RUN uv run python -c "from omnivoice import OmniVoice; OmniVoice.from_pretrained('${CFG_MODEL}', load_asr=True, load_asr_model='${CFG_LOAD_ASR_MODEL}')"
+
+
+# Copy frequently changing serving code at the end.
+COPY serve /app/serve
+RUN chmod +x /app/serve/deploy.sh
+
+# Clean any cached bytecode from host context.
+RUN find /app -type d -name "__pycache__" -prune -exec rm -rf {} + && \
+    find /app -type f -name "*.pyc" -delete
 
 # Gateway
 EXPOSE ${GATEWAY_PORT}
