@@ -1,0 +1,1 @@
+"""OmniVoice gRPC serving package."""

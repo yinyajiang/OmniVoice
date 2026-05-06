@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package omnivoice;
+
+service OmniVoiceTTS {
+  rpc Synthesize(SynthesizeRequest) returns (SynthesizeResponse);
+  rpc Health(HealthRequest) returns (HealthResponseArray);
+  rpc SynthesizeTest(SynthesizeRequest) returns (SynthesizeTestResponse);
+  rpc Asr(AsrRequest) returns (AsrResponse);
+}
+
+message SynthesizeRequest {
+  string text = 1;
+  optional string language = 2;
+  optional string instruct = 3;
+  optional float speed = 4;
+  optional float duration = 5;
+  optional float max_duration_ms = 6;
+  int32 num_step = 7;       // default 32
+  float guidance_scale = 8; // default 2.0
+  optional bytes ref_audio = 9;
+  optional string ref_text = 10;
+  optional float request_timeout_s = 11;
+}
+
+message SynthesizeTestResponse{
+  float audio_duration_s = 1;
+  optional float elapsed_s = 2;
+  optional string worker_id = 3;
+}
+
+
+message SynthesizeResponse {
+  bytes audio = 1;
+  optional float elapsed_s = 2;
+  optional string worker_id = 3;
+}
+
+message AsrRequest {
+  bytes audio = 1;
+}
+
+message AsrResponse {
+  string text = 1;
+  optional float elapsed_s = 2;
+  optional string worker_id = 3;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string device = 2;
+  string model = 3;
+  int32 queue_depth = 4;
+  int32 max_queue_size = 5;
+}
+
+message HealthResponseArray {
+  int32 workers = 1;
+  repeated HealthResponse items = 2;
+  int32 load_asr_workers=3;
+}
+

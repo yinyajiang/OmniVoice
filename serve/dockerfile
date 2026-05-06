@@ -1,0 +1,43 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/opt/hf-cache \
+    WORKERS=1 \
+    LOAD_ASR_WORKERS_COUNT=1 \
+    GATEWAY_PORT=50550
+
+WORKDIR /app
+
+# Runtime deps for audio decoding and basic build tooling.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    build-essential \
+    curl \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Copy project files.
+COPY . /app
+
+# Clean any cached bytecode from host context.
+RUN find /app -type d -name "__pycache__" -prune -exec rm -rf {} + && \
+    find /app -type f -name "*.pyc" -delete
+
+# Ensure deploy script is executable and install dependencies.
+RUN chmod +x /app/serve/deploy.sh && uv sync
+
+# Pre-download model during image build (default: k2-fsa/OmniVoice).
+ARG CFG_MODEL=k2-fsa/OmniVoice
+RUN uv run python -c "from omnivoice import OmniVoice; OmniVoice.from_pretrained('${CFG_MODEL}', load_asr=True)"
+
+# Gateway
+EXPOSE ${GATEWAY_PORT}
+
+# Start OmniVoice gRPC stack via deploy script.
+CMD ["bash", "/app/serve/deploy.sh"]

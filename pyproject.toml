@@ -41,6 +41,10 @@ dependencies = [
     "numpy",
     "soundfile",
     "librosa",
+    "python-dotenv",
+    "grpcio==1.76.0",
+    "grpcio-tools==1.76.0",
+    "protobuf>=5.29",
 ]
 
 [project.optional-dependencies]

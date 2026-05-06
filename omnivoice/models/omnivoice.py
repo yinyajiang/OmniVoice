@@ -492,6 +492,7 @@ class OmniVoice(PreTrainedModel):
         duration: Union[float, list[Optional[float]], None] = None,
         speed: Union[float, list[Optional[float]], None] = None,
         generation_config: Optional[OmniVoiceGenerationConfig] = None,
+        max_duration_ms: Union[float, list[Optional[float]], None] = None,
         **kwargs,
     ) -> list[np.ndarray]:
         """Generate speech audio given text in various modes.
@@ -523,6 +524,12 @@ class OmniVoice(PreTrainedModel):
             speed: Speaking speed factor. ``> 1.0`` for faster, ``< 1.0`` for
                 slower. If a list, one value per item. ``None`` (default) uses
                 the model's default estimation.
+            max_duration_ms: Maximum output audio duration in milliseconds.
+                If a single float, applies to all items; if a list, one value
+                per item (use ``None`` per item to disable the limit for that
+                item). When set and the estimated output exceeds this limit,
+                text is generated in chunks and generation stops once the
+                accumulated duration reaches the limit.
             generation_config: Explicit config object. If provided, takes
                 precedence over ``**kwargs``.
             **kwargs: Generation config or its fields:
@@ -571,9 +578,50 @@ class OmniVoice(PreTrainedModel):
             duration=duration,
         )
 
+        frame_rate = self.audio_tokenizer.config.frame_rate
+        batch_size = full_task.batch_size
+
+        if max_duration_ms is None:
+            max_duration_ms_list: list[Optional[float]] = [None] * batch_size
+        elif isinstance(max_duration_ms, (int, float)):
+            max_duration_ms_list = [float(max_duration_ms)] * batch_size
+        else:
+            if len(max_duration_ms) != batch_size:
+                raise ValueError(
+                    f"max_duration_ms list length {len(max_duration_ms)} != "
+                    f"batch size {batch_size}"
+                )
+            max_duration_ms_list = [
+                float(v) if v is not None else None for v in max_duration_ms
+            ]
+
+        max_target_tokens_list: list[Optional[int]] = [
+            max(1, int(v / 1000.0 * frame_rate)) if v is not None else None
+            for v in max_duration_ms_list
+        ]
+        if any(v is not None for v in max_target_tokens_list):
+            logger.debug(
+                "max_duration_ms=%s → max_target_tokens=%s, "
+                "estimated target_lens=%s",
+                max_duration_ms_list, max_target_tokens_list,
+                full_task.target_lens,
+            )
+
         short_idx, long_idx = full_task.get_indices(
-            gen_config, self.audio_tokenizer.config.frame_rate
+            gen_config, frame_rate
         )
+        # Do not clamp the full-text target length. If the estimate exceeds
+        # the per-item duration budget, route it through chunked generation
+        # so the model generates natural chunks and stops after the budget
+        # instead of compressing the whole text into a too-short target.
+        capped_idx = [
+            i for i, t in enumerate(full_task.target_lens)
+            if max_target_tokens_list[i] is not None
+            and t > max_target_tokens_list[i]
+        ]
+        if capped_idx:
+            short_idx = [i for i in short_idx if i not in capped_idx]
+            long_idx = sorted(set(long_idx).union(capped_idx))
 
         results = [None] * full_task.batch_size
 
@@ -585,7 +633,13 @@ class OmniVoice(PreTrainedModel):
 
         if long_idx:
             long_task = full_task.slice_task(long_idx)
-            long_results = self._generate_chunked(long_task, gen_config)
+            long_max_target_tokens = [
+                max_target_tokens_list[i] for i in long_idx
+            ]
+            long_results = self._generate_chunked(
+                long_task, gen_config,
+                max_target_tokens=long_max_target_tokens,
+            )
             for idx, res in zip(long_idx, long_results):
                 results[idx] = res
 
@@ -785,7 +839,10 @@ class OmniVoice(PreTrainedModel):
         return generated_audio
 
     def _generate_chunked(
-        self, task: GenerationTask, gen_config: OmniVoiceGenerationConfig
+        self,
+        task: GenerationTask,
+        gen_config: OmniVoiceGenerationConfig,
+        max_target_tokens: Union[int, list[Optional[int]], None] = None,
     ) -> List[List[torch.Tensor]]:
         """Generate long audio by splitting text into chunks and batching.
 
@@ -797,18 +854,36 @@ class OmniVoice(PreTrainedModel):
                 estimated audio exceeds ``audio_chunk_threshold``.
             gen_config: Generation config (``audio_chunk_duration`` controls
                 chunk size).
+            max_target_tokens: If set, stop generating new chunks for an item
+                once its accumulated token count reaches this limit. Can be a
+                single int (applies to all items) or a list of ``Optional[int]``
+                with one value per item (use ``None`` to disable for that item).
         Returns:
             Per-item list of chunk token-tensor lists.
         """
-        # Chunk each item's text
+        if max_target_tokens is None:
+            max_target_tokens_list: list[Optional[int]] = [None] * task.batch_size
+        elif isinstance(max_target_tokens, int):
+            max_target_tokens_list = [max_target_tokens] * task.batch_size
+        else:
+            if len(max_target_tokens) != task.batch_size:
+                raise ValueError(
+                    f"max_target_tokens list length {len(max_target_tokens)} "
+                    f"!= batch size {task.batch_size}"
+                )
+            max_target_tokens_list = list(max_target_tokens)
+
         all_chunks = []
         for i in range(task.batch_size):
             avg_tokens_per_char = task.target_lens[i] / len(task.texts[i])
-            text_chunk_len = int(
-                gen_config.audio_chunk_duration
-                * self.audio_tokenizer.config.frame_rate
-                / avg_tokens_per_char
+            chunk_target_tokens = gen_config.audio_chunk_duration * (
+                self.audio_tokenizer.config.frame_rate
             )
+            if max_target_tokens_list[i] is not None:
+                chunk_target_tokens = min(
+                    chunk_target_tokens, max_target_tokens_list[i]
+                )
+            text_chunk_len = max(3, int(chunk_target_tokens / avg_tokens_per_char))
             chunks = chunk_text_punctuation(
                 text=task.texts[i],
                 chunk_len=text_chunk_len,
@@ -827,6 +902,15 @@ class OmniVoice(PreTrainedModel):
 
         # chunk_results[item_idx] = list of generated token tensors per chunk
         chunk_results = [[] for _ in range(task.batch_size)]
+        # Track accumulated tokens per item for early stopping
+        accumulated_tokens = [0] * task.batch_size
+
+        def _item_done(i):
+            """Check if item i has already reached max_target_tokens."""
+            cap = max_target_tokens_list[i]
+            if cap is None:
+                return False
+            return accumulated_tokens[i] >= cap
 
         def _run_batch(indices, texts, ref_audios, ref_texts):
             speed_list = task.speed
@@ -838,6 +922,11 @@ class OmniVoice(PreTrainedModel):
                     speed=speed_list[i] if speed_list else 1.0,
                 )
                 for j, i in enumerate(indices)
+            ]
+            target_lens = [
+                min(tl, max_target_tokens_list[idx] - accumulated_tokens[idx])
+                if max_target_tokens_list[idx] is not None else tl
+                for tl, idx in zip(target_lens, indices)
             ]
             sub_task = GenerationTask(
                 batch_size=len(indices),
@@ -853,14 +942,14 @@ class OmniVoice(PreTrainedModel):
             gen_tokens = self._generate_iterative(sub_task, gen_config)
             for j, idx in enumerate(indices):
                 chunk_results[idx].append(gen_tokens[j])
+                accumulated_tokens[idx] += gen_tokens[j].size(-1)
 
         if all(has_ref):
-            # All items have reference audio.
-            # We still sequentially generate chunks within each item, but we
-            # batch across items for the same chunk index. This allows to keep
-            # the VRAM usage manageable while still benefiting from batching.
             for ci in range(max_num_chunks):
-                indices = [i for i in range(task.batch_size) if ci < len(all_chunks[i])]
+                indices = [
+                    i for i in range(task.batch_size)
+                    if ci < len(all_chunks[i]) and not _item_done(i)
+                ]
                 if not indices:
                     continue
                 _run_batch(
@@ -870,8 +959,6 @@ class OmniVoice(PreTrainedModel):
                     ref_texts=[task.ref_texts[i] for i in indices],
                 )
         else:
-            # No reference audio — generate chunk 0 for all items first,
-            # then use chunk 0 output as reference for all subsequent chunks.
             indices_0 = [i for i in range(task.batch_size) if len(all_chunks[i]) > 0]
             _run_batch(
                 indices_0,
@@ -881,9 +968,11 @@ class OmniVoice(PreTrainedModel):
             )
             first_chunk_map = {idx: chunk_results[idx][0] for idx in indices_0}
 
-            # Batch all remaining chunks, using chunk 0 as fixed reference
             for ci in range(1, max_num_chunks):
-                indices = [i for i in range(task.batch_size) if ci < len(all_chunks[i])]
+                indices = [
+                    i for i in range(task.batch_size)
+                    if ci < len(all_chunks[i]) and not _item_done(i)
+                ]
                 if not indices:
                     continue
                 _run_batch(
@@ -1042,7 +1131,7 @@ class OmniVoice(PreTrainedModel):
         est = self.duration_estimator.estimate_duration(
             text, ref_text, num_ref_audio_tokens
         )
-        if speed > 0 and speed != 1.0:
+        if speed and speed > 0 and speed != 1.0:
             est = est / speed
         return max(1, int(est))
 
