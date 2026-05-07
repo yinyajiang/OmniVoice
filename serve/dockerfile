@@ -33,9 +33,9 @@ RUN find /app -type d -name "__pycache__" -prune -exec rm -rf {} + && \
 
 # Install dependencies and pre-download models.
 RUN uv sync
-ARG CFG_MODEL=k2-fsa/OmniVoice
-ARG CFG_LOAD_ASR_MODEL=openai/whisper-large-v3-turbo
-RUN uv run python -c "from omnivoice import OmniVoice; OmniVoice.from_pretrained('${CFG_MODEL}', load_asr=True, load_asr_model='${CFG_LOAD_ASR_MODEL}')"
+ARG PRE_DOWNLOAD_MODEL=k2-fsa/OmniVoice
+ARG PRE_DOWNLOAD_ASR_MODEL=openai/whisper-large-v3-turbo
+RUN uv run python -c "from omnivoice import OmniVoice; OmniVoice.from_pretrained('${PRE_DOWNLOAD_MODEL}', load_asr=True, asr_model_name='${PRE_DOWNLOAD_ASR_MODEL}')"
 
 
 # Copy frequently changing serving code at the end.
