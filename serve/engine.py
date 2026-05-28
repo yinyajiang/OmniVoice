@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import contextlib
+
+import numpy as np
 import soundfile as sf
 import torch
 
@@ -236,8 +238,17 @@ class BatchInferenceEngine:
         waveform = torch.from_numpy(wav_data).float().unsqueeze(0)
         return waveform, sr
 
-    def _tensor_to_wav_bytes(self, tensor: torch.Tensor) -> bytes:
-        waveform = tensor.squeeze(0).cpu().numpy()
+    def _tensor_to_wav_bytes(self, wav: torch.Tensor | np.ndarray) -> bytes:
+        if isinstance(wav, torch.Tensor):
+            arr = wav.detach().cpu().numpy()
+        else:
+            arr = np.asarray(wav)
+
+        arr = np.squeeze(arr)
+        if arr.ndim > 1:
+            # (channels, time) or (time, channels) -> mono (time,)
+            arr = arr.mean(axis=0 if arr.shape[0] < arr.shape[-1] else -1)
+
         buf = io.BytesIO()
-        sf.write(buf, waveform, self.model.sampling_rate, format="WAV")
+        sf.write(buf, arr.astype(np.float32), self.model.sampling_rate, format="WAV")
         return buf.getvalue()
