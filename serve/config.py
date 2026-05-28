@@ -23,6 +23,6 @@ CFG_MAX_PENDING_QUEUE = int(os.environ.get("CFG_MAX_PENDING_QUEUE","64"))
 CFG_COMPILE_MODEL = os.environ.get("CFG_COMPILE", "0") == "1"
 CFG_LOAD_ASR_MODEL = os.environ.get("CFG_LOAD_ASR_MODEL", "openai/whisper-large-v3-turbo")
 
-
+CFG_GRPC_MAX_MESSAGE_LENGTH = 50_000_000
 
 

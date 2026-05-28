@@ -1,0 +1,20 @@
+# 在仓库根目录构建
+# cd /root/doc/OmniVoice
+# docker build -f serve/dockerfile -t tts_omnivoice:latest .
+
+# GPU 运行（需 nvidia-smi 正常 + nvidia-container-toolkit）
+docker run --rm --gpus all \
+  -p 50560:50560 \
+  -e WORKERS=3 \
+  -e LOAD_ASR_WORKERS_COUNT=2 \
+  -e GATEWAY_PORT=50560 \
+  -e CFG_DEVICE=cuda \
+  tts_omnivoice:latest
+
+# CPU 运行（无 GPU 或驱动未加载时）
+# docker run --rm \
+#   -p 50560:50560 \
+#   -e WORKERS=1 \
+#   -e GATEWAY_PORT=50560 \
+#   -e CFG_DEVICE=cpu \
+#   tts_omnivoice:latest

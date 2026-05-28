@@ -7,8 +7,14 @@ import grpc
 
 from . import omnivoice_pb2 as pb2
 from . import omnivoice_pb2_grpc as pb2_grpc
+from .config import CFG_GRPC_MAX_MESSAGE_LENGTH
 
 logger = logging.getLogger("omnivoice.gateway")
+
+_GRPC_OPTIONS = [
+    ("grpc.max_send_message_length", CFG_GRPC_MAX_MESSAGE_LENGTH),
+    ("grpc.max_receive_message_length", CFG_GRPC_MAX_MESSAGE_LENGTH),
+]
 
 
 class GatewayServicer(pb2_grpc.OmniVoiceTTSServicer):
@@ -21,7 +27,7 @@ class GatewayServicer(pb2_grpc.OmniVoiceTTSServicer):
         self._asr_enabled: list[bool] = []
         for addr in worker_addrs:
             ch_addr, asr_enabled = self._parse_worker_addr(addr)
-            ch = grpc.aio.insecure_channel(ch_addr)
+            ch = grpc.aio.insecure_channel(ch_addr, options=_GRPC_OPTIONS)
             self._channels.append(ch)
             self._stubs.append(pb2_grpc.OmniVoiceTTSStub(ch))
             self._asr_enabled.append(asr_enabled)
@@ -120,7 +126,7 @@ class GatewayServicer(pb2_grpc.OmniVoiceTTSServicer):
 async def serve_gateway(listen_port: int, worker_addrs: list[str]):
     servicer = GatewayServicer(worker_addrs)
 
-    server = grpc.aio.server()
+    server = grpc.aio.server(options=_GRPC_OPTIONS)
     pb2_grpc.add_OmniVoiceTTSServicer_to_server(servicer, server)
     server.add_insecure_port(f"0.0.0.0:{listen_port}")
     await server.start()

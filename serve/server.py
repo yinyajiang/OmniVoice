@@ -8,6 +8,7 @@ import time
 import grpc
 import soundfile as sf
 import torch
+from pydub import AudioSegment
 
 from omnivoice import OmniVoice
 
@@ -22,6 +23,7 @@ from .config import (
     CFG_MAX_PENDING_QUEUE,
     CFG_MAX_BATCH_WAIT_MS,
     CFG_MODEL_PATH,
+    CFG_GRPC_MAX_MESSAGE_LENGTH
 )
 from .engine import BatchInferenceEngine, InferenceRequest
 
@@ -92,8 +94,8 @@ class OmniVoiceTTSServicer(pb2_grpc.OmniVoiceTTSServicer):
 
     async def SynthesizeTest(self, request, context):
         synth_resp = await self.Synthesize(request, context)
-        audio_info = sf.info(io.BytesIO(synth_resp.audio))
-        audio_duration_s = audio_info.duration
+        audio = AudioSegment.from_file(io.BytesIO(synth_resp.audio), format="mp3")
+        audio_duration_s = len(audio) / 1000.0
         return pb2.SynthesizeTestResponse(
             audio_duration_s=audio_duration_s,
             elapsed_s=synth_resp.elapsed_s,
@@ -178,7 +180,10 @@ async def serve(port: int, load_asr: bool = True):
     )
     engine.start(asyncio.get_event_loop())
 
-    server = grpc.aio.server()
+    server = grpc.aio.server(options=[
+        ("grpc.max_send_message_length", CFG_GRPC_MAX_MESSAGE_LENGTH),
+        ("grpc.max_receive_message_length", CFG_GRPC_MAX_MESSAGE_LENGTH),
+    ])
     pb2_grpc.add_OmniVoiceTTSServicer_to_server(
         OmniVoiceTTSServicer(engine), server
     )
@@ -189,11 +194,13 @@ async def serve(port: int, load_asr: bool = True):
         "gRPC worker ready on port %d\n"
         "  model=%s  device=%s  dtype=%s\n"
         "  max_batch=%d  max_wait_ms=%.0f  max_queue=%d\n"
+        "  grpc_max_message_length=%d\n"
         "  compile=%s  load_asr=%s  load_asr_model=%s",
         port,
         CFG_MODEL_PATH, CFG_DEVICE, CFG_DTYPE,
         CFG_MAX_BATCH, CFG_MAX_BATCH_WAIT_MS, CFG_MAX_PENDING_QUEUE,
-        CFG_COMPILE_MODEL, load_asr, 
+        CFG_GRPC_MAX_MESSAGE_LENGTH,
+        CFG_COMPILE_MODEL, load_asr,
         CFG_LOAD_ASR_MODEL,
     )
 

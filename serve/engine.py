@@ -12,6 +12,7 @@ import soundfile as sf
 import torch
 
 from omnivoice import OmniVoice, OmniVoiceGenerationConfig
+from omnivoice.utils.audio import numpy_to_audiosegment
 DEFAULT_NUM_STEP  = 32
 DEFAULT_GUIDANCE_SCALE = 2.0
 logger = logging.getLogger("tts.serve")
@@ -250,5 +251,9 @@ class BatchInferenceEngine:
             arr = arr.mean(axis=0 if arr.shape[0] < arr.shape[-1] else -1)
 
         buf = io.BytesIO()
-        sf.write(buf, arr.astype(np.float32), self.model.sampling_rate, format="WAV")
+        segment = numpy_to_audiosegment(
+            arr.astype(np.float32)[np.newaxis, :],
+            self.model.sampling_rate,
+        )
+        segment.export(buf, format="mp3", bitrate="64k")
         return buf.getvalue()
